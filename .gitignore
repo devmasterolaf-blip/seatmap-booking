@@ -6,3 +6,6 @@ target/
 *.iml
 .DS_Store
 /scratch/
+
+# local demo data created by following the README
+/demo/
