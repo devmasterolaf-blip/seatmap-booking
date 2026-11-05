@@ -249,6 +249,25 @@ class AppTest {
         Result result = invoke("--data", data.resolve("nowhere").toString(), "events");
 
         assertEquals(1, result.code());
+        assertTrue(result.err().startsWith("seatmap: data directory"), result.err());
+        assertTrue(result.err().strip().endsWith("nowhere does not exist"), result.err());
+    }
+
+    @Test
+    void aDataDirectoryWithoutEventsFileIsReported() throws IOException {
+        Files.delete(data.resolve("events.conf"));
+
+        Result result = run("events");
+
+        assertEquals(1, result.code());
         assertTrue(result.err().startsWith("seatmap: no events.conf in data directory"), result.err());
+    }
+
+    @Test
+    void anUnusableDataPathIsAUsageError() {
+        Result result = invoke("--data", "bad\u0000path", "events");
+
+        assertEquals(2, result.code());
+        assertTrue(result.err().startsWith("seatmap: --data is not a usable path"), result.err());
     }
 }

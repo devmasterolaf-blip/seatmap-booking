@@ -2,6 +2,7 @@ package seatmap.cli;
 
 import java.io.PrintStream;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
@@ -45,7 +46,8 @@ import seatmap.venue.Section;
  * <p>A data directory holds {@code events.conf} (with the layout files it refers to),
  * the reservation state in {@code state.tsv} and the audit trail in {@code audit.log}.
  * Every invocation loads that directory, runs one command and exits with 0 on success,
- * 1 when the command was understood but failed, and 2 for a malformed command line.
+ * 1 when the command was understood but failed, 2 for a malformed command line and 3
+ * for an unexpected internal error.
  */
 public final class App {
     static final String EVENTS_FILE = "events.conf";
@@ -82,6 +84,8 @@ public final class App {
             options:
               --data DIR      data directory holding events.conf (default: current directory)
               --now INSTANT   pretend the current time is INSTANT, e.g. 2026-10-01T12:00:00Z
+
+            exit status: 0 success, 1 the command failed, 2 usage error, 3 internal error
             """;
 
     private final PrintStream out;
@@ -114,6 +118,10 @@ public final class App {
         } catch (SeatmapException e) {
             err.println("seatmap: " + e.getMessage());
             return 1;
+        } catch (RuntimeException e) {
+            // A defect rather than bad input: say so, without burying the user in a stack trace.
+            err.println("seatmap: internal error: " + e);
+            return 3;
         }
     }
 
@@ -145,12 +153,15 @@ public final class App {
         private FileAuditLog auditLog;
 
         Session(Args args) {
-            this.dataDir = Path.of(args.value("data").orElse("."));
+            this.dataDir = dataDirectory(args.value("data").orElse("."));
             this.clock = args.value("now").map(App::fixedClock).orElse(systemClock);
         }
 
         EventCatalog catalog() {
             if (catalog == null) {
+                if (!Files.isDirectory(dataDir)) {
+                    throw new SeatmapException("data directory " + dataDir + " does not exist");
+                }
                 Path events = dataDir.resolve(EVENTS_FILE);
                 if (!Files.isRegularFile(events)) {
                     throw new SeatmapException("no " + EVENTS_FILE + " in data directory " + dataDir);
@@ -415,6 +426,14 @@ public final class App {
             return Integer.parseInt(text);
         } catch (NumberFormatException e) {
             throw new UsageException(option + " needs a whole number, got '" + text + "'");
+        }
+    }
+
+    private static Path dataDirectory(String text) {
+        try {
+            return Path.of(text);
+        } catch (InvalidPathException e) {
+            throw new UsageException("--data is not a usable path: " + e.getReason());
         }
     }
 
