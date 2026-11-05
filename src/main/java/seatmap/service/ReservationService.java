@@ -13,6 +13,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 
+import seatmap.alloc.BestAvailableAllocator;
+import seatmap.alloc.SeatRequest;
 import seatmap.booking.Booking;
 import seatmap.booking.Hold;
 import seatmap.booking.SeatStatus;
@@ -53,6 +55,7 @@ public final class ReservationService {
     private final ReservationRepository repository;
     private final Clock clock;
     private final PricingEngine pricing = new PricingEngine();
+    private final BestAvailableAllocator allocator = new BestAvailableAllocator();
     private final Map<String, ReentrantLock> locks = new ConcurrentHashMap<>();
 
     public ReservationService(EventCatalog catalog, ReservationRepository repository, Clock clock) {
@@ -88,6 +91,27 @@ public final class ReservationService {
                 throw new SeatUnavailableException(eventId, taken);
             }
             return createHold(event, wanted, name, lifetime, now);
+        });
+    }
+
+    /**
+     * Lets the allocator choose the seats and holds them in one atomic step.
+     *
+     * @param ttl how long the hold lasts, or {@code null} for the event's default
+     * @throws SeatUnavailableException if the request cannot be met with the seats that are free
+     */
+    public Hold holdBestAvailable(String eventId, SeatRequest request, String customer, Duration ttl) {
+        Event event = catalog.require(eventId);
+        String name = requireCustomer(customer);
+        requireRequest(event, request);
+        Duration lifetime = requireTtl(event, ttl);
+        return locked(eventId, () -> {
+            Instant now = clock.instant();
+            requireOnSale(event, now);
+            purgeExpired(eventId, now);
+            List<Seat> chosen = allocator.allocate(event.venue(), occupied(eventId, now).keySet(), request)
+                    .orElseThrow(() -> new SeatUnavailableException(describeFailure(event, request)));
+            return createHold(event, chosen.stream().map(Seat::id).toList(), name, lifetime, now);
         });
     }
 
@@ -300,6 +324,37 @@ public final class ReservationService {
             }
         }
         return List.copyOf(seats);
+    }
+
+    private static void requireRequest(Event event, SeatRequest request) {
+        if (request == null) {
+            throw new ValidationException("a seat request is required");
+        }
+        if (request.count() > MAX_SEATS_PER_HOLD) {
+            throw new ValidationException("at most " + MAX_SEATS_PER_HOLD + " seats can be held at once, got "
+                    + request.count());
+        }
+        if (request.category() != null && !event.venue().categories().containsKey(request.category())) {
+            throw new NotFoundException("category", request.category());
+        }
+        if (request.section() != null && event.venue().section(request.section()).isEmpty()) {
+            throw new NotFoundException("section", request.section());
+        }
+    }
+
+    private static String describeFailure(Event event, SeatRequest request) {
+        StringBuilder text = new StringBuilder("no ");
+        text.append(request.count()).append(request.count() == 1 ? " free seat" : " adjacent free seats");
+        if (request.category() != null) {
+            text.append(" in category ").append(request.category());
+        }
+        if (request.sectionOnly()) {
+            text.append(" in section ").append(request.section());
+        }
+        if (request.accessibleSeats() > 0) {
+            text.append(" with ").append(request.accessibleSeats()).append(" accessible");
+        }
+        return text.append(" for event ").append(event.id()).toString();
     }
 
     private static Duration requireTtl(Event event, Duration ttl) {

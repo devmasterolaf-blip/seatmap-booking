@@ -15,6 +15,7 @@ import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import seatmap.alloc.SeatRequest;
 import seatmap.booking.Booking;
 import seatmap.booking.Hold;
 import seatmap.booking.SeatStatus;
@@ -113,6 +114,35 @@ class ReservationServiceTest {
         clock.advance(Duration.ofMinutes(15));
         assertEquals(2, service.expireHolds());
         assertEquals(1, repository.allHolds().size());
+    }
+
+    // ---- best available ----
+
+    @Test
+    void holdBestAvailableSkipsSeatsThatAreAlreadyTaken() {
+        Hold first = service.holdBestAvailable("HAMLET", SeatRequest.of(2).withCategory("PREM"), "Ann", null);
+        assertEquals(seats("ORCH-A-6", "ORCH-A-7"), first.seats());
+        Hold second = service.holdBestAvailable("HAMLET", SeatRequest.of(2).withCategory("PREM"), "Bob", null);
+        assertEquals(seats("ORCH-A-4", "ORCH-A-5"), second.seats());
+        service.confirm(first.id(), null);
+        service.release(second.id());
+        Hold third = service.holdBestAvailable("HAMLET", SeatRequest.of(4).withCategory("PREM"), "Cy", null);
+        assertEquals(seats("ORCH-B-4", "ORCH-B-5", "ORCH-B-6", "ORCH-B-7"), third.seats());
+    }
+
+    @Test
+    void holdBestAvailableReportsWhatCouldNotBeFound() {
+        SeatUnavailableException e = assertThrows(SeatUnavailableException.class, () -> service.holdBestAvailable(
+                "HAMLET", SeatRequest.of(7).withCategory("PREM").onlyInSection("ORCH"), "Ann", null));
+        assertEquals("no 7 adjacent free seats in category PREM in section ORCH for event HAMLET", e.getMessage());
+        assertTrue(e.seats().isEmpty());
+        assertEquals("category", assertThrows(NotFoundException.class,
+                () -> service.holdBestAvailable("HAMLET", SeatRequest.of(2).withCategory("VIP"), "Ann", null)).kind());
+        assertEquals("section", assertThrows(NotFoundException.class,
+                () -> service.holdBestAvailable("HAMLET", SeatRequest.of(2).preferringSection("PIT"), "Ann", null)).kind());
+        assertThrows(ValidationException.class,
+                () -> service.holdBestAvailable("HAMLET", SeatRequest.of(13).allowingSplit(), "Ann", null));
+        assertThrows(ValidationException.class, () -> service.holdBestAvailable("HAMLET", null, "Ann", null));
     }
 
     // ---- confirmation ----
