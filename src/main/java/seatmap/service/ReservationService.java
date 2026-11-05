@@ -35,6 +35,8 @@ import seatmap.pricing.PricingEngine;
 import seatmap.pricing.PromoCode;
 import seatmap.pricing.Quote;
 import seatmap.repo.ReservationRepository;
+import seatmap.report.OccupancyReport;
+import seatmap.report.RevenueReport;
 import seatmap.venue.Seat;
 import seatmap.venue.SeatId;
 
@@ -216,6 +218,18 @@ public final class ReservationService {
             }
             return result;
         });
+    }
+
+    /** Seat counts per section and category at this moment. */
+    public OccupancyReport occupancy(String eventId) {
+        Event event = catalog.require(eventId);
+        return OccupancyReport.of(event, availability(eventId));
+    }
+
+    /** Sales, discounts and refunds of the event so far. */
+    public RevenueReport revenue(String eventId) {
+        Event event = catalog.require(eventId);
+        return locked(eventId, () -> RevenueReport.of(event, repository.bookingsForEvent(eventId)));
     }
 
     /**
