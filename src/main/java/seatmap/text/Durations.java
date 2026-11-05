@@ -24,14 +24,18 @@ public final class Durations {
         if (amount < 0 || digits.startsWith("+")) {
             throw new ValidationException("'" + text + "' is not a duration (expected e.g. 15m, 24h, 7d)");
         }
-        return switch (unit) {
-            case 's' -> Duration.ofSeconds(amount);
-            case 'm' -> Duration.ofMinutes(amount);
-            case 'h' -> Duration.ofHours(amount);
-            case 'd' -> Duration.ofDays(amount);
-            default -> throw new ValidationException(
-                    "'" + text + "' has an unknown duration unit '" + unit + "' (use s, m, h or d)");
-        };
+        try {
+            return switch (unit) {
+                case 's' -> Duration.ofSeconds(amount);
+                case 'm' -> Duration.ofMinutes(amount);
+                case 'h' -> Duration.ofHours(amount);
+                case 'd' -> Duration.ofDays(amount);
+                default -> throw new ValidationException(
+                        "'" + text + "' has an unknown duration unit '" + unit + "' (use s, m, h or d)");
+            };
+        } catch (ArithmeticException e) {
+            throw new ValidationException("'" + text + "' is too long a duration");
+        }
     }
 
     /** Prints a duration with the largest unit that represents it exactly. */

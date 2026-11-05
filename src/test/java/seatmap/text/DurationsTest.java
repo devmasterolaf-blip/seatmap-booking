@@ -36,6 +36,18 @@ class DurationsTest {
     }
 
     @ParameterizedTest
+    @ValueSource(strings = { "9223372036854775807m", "999999999999999d", "9223372036854775807h" })
+    void rejectsAmountsTooLargeToRepresent(String text) {
+        ValidationException e = assertThrows(ValidationException.class, () -> Durations.parse(text));
+        assertEquals("'" + text + "' is too long a duration", e.getMessage());
+    }
+
+    @Test
+    void acceptsTheLargestNumberOfSeconds() {
+        assertEquals(Duration.ofSeconds(Long.MAX_VALUE), Durations.parse("9223372036854775807s"));
+    }
+
+    @ParameterizedTest
     @CsvSource({ "0, 0s", "59, 59s", "60, 1m", "90, 90s", "3600, 1h", "5400, 90m", "86400, 1d", "129600, 36h",
             "604800, 7d" })
     void formatsWithTheLargestExactUnit(long seconds, String expected) {
