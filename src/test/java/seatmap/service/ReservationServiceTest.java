@@ -86,6 +86,15 @@ class ReservationServiceTest {
     }
 
     @Test
+    void anEnormousTtlIsCappedAtEventStartToo() {
+        Hold years = service.hold("HAMLET", seats("ORCH-A-1"), "Ann", Duration.ofDays(1_000_000_000_000L));
+        assertEquals(Fixtures.HAMLET_START, years.expiresAt());
+
+        Hold forever = service.hold("HAMLET", seats("ORCH-A-2"), "Ann", Duration.ofSeconds(Long.MAX_VALUE));
+        assertEquals(Fixtures.HAMLET_START, forever.expiresAt());
+    }
+
+    @Test
     void holdValidatesItsInput() {
         assertThrows(NotFoundException.class, () -> service.hold("OTHELLO", seats("ORCH-A-1"), "Ann"));
         assertEquals("seat", assertThrows(NotFoundException.class,

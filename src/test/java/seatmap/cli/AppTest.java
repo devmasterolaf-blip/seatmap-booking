@@ -133,6 +133,19 @@ class AppTest {
     }
 
     @Test
+    void aVeryLongTtlEndsWhenTheEventStarts() {
+        Result hold = run("hold", "HAMLET", "--customer", "Ann", "--seats", "ORCH-A-6", "--ttl", "9999999999999d");
+
+        assertEquals(0, hold.code(), hold.err());
+        assertTrue(hold.out().contains("expires 2026-12-01T19:30:00Z"), hold.out());
+
+        Result absurd = run("hold", "HAMLET", "--customer", "Ann", "--seats", "ORCH-A-7", "--ttl",
+                "999999999999999d");
+        assertEquals(1, absurd.code());
+        assertEquals("seatmap: '999999999999999d' is too long a duration", absurd.err().strip());
+    }
+
+    @Test
     void aTakenSeatCannotBeHeldAgain() {
         run("hold", "HAMLET", "--customer", "Ann", "--seats", "ORCH-A-6");
 

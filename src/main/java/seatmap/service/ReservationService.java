@@ -246,10 +246,9 @@ public final class ReservationService {
     }
 
     private Hold createHold(Event event, List<SeatId> seats, String customer, Duration lifetime, Instant now) {
-        Instant expiresAt = now.plus(lifetime);
-        if (expiresAt.isAfter(event.startsAt())) {
-            expiresAt = event.startsAt();
-        }
+        // Compare durations instead of adding first: now + lifetime can overflow Instant.
+        Duration untilStart = Duration.between(now, event.startsAt());
+        Instant expiresAt = lifetime.compareTo(untilStart) >= 0 ? event.startsAt() : now.plus(lifetime);
         String id = String.format("H-%06d", repository.nextSequence("hold"));
         Hold hold = new Hold(id, event.id(), customer, seats, now, expiresAt);
         repository.saveHold(hold);
