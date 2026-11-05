@@ -16,6 +16,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import seatmap.alloc.SeatRequest;
+import seatmap.audit.AuditEntry;
+import seatmap.audit.InMemoryAuditLog;
 import seatmap.booking.Booking;
 import seatmap.booking.Hold;
 import seatmap.booking.SeatStatus;
@@ -34,13 +36,15 @@ import seatmap.venue.SeatId;
 class ReservationServiceTest {
     private MutableClock clock;
     private InMemoryReservationRepository repository;
+    private InMemoryAuditLog audit;
     private ReservationService service;
 
     @BeforeEach
     void setUp() {
         clock = new MutableClock(Fixtures.NOW);
         repository = new InMemoryReservationRepository();
-        service = new ReservationService(Fixtures.catalog(), repository, clock);
+        audit = new InMemoryAuditLog();
+        service = new ReservationService(Fixtures.catalog(), repository, clock, audit);
     }
 
     private SeatStatus status(String event, String seat) {
@@ -256,6 +260,39 @@ class ReservationServiceTest {
         assertThrows(NotFoundException.class, () -> service.cancel("B-999999"));
         assertFalse(repository.findBooking(booking.id()).orElseThrow().isConfirmed());
         service.hold("HAMLET", seats("ORCH-A-4"), "Bob");
+    }
+
+    // ---- audit trail ----
+
+    @Test
+    void everyStateChangeIsAudited() {
+        Hold kept = service.hold("HAMLET", seats("ORCH-A-4", "ORCH-A-5"), "Ann");
+        Hold released = service.hold("HAMLET", seats("ORCH-A-6"), "Bob");
+        Hold lapsed = service.hold("HAMLET", seats("ORCH-A-7"), "Cy", Duration.ofMinutes(1));
+        service.release(released.id());
+        Booking booking = service.confirm(kept.id(), "FIVER");
+        clock.advance(Duration.ofMinutes(2));
+        service.expireHolds();
+        service.cancel(booking.id());
+
+        List<AuditEntry> entries = audit.entries();
+        assertEquals(List.of(AuditEntry.Type.HOLD_PLACED, AuditEntry.Type.HOLD_PLACED, AuditEntry.Type.HOLD_PLACED,
+                AuditEntry.Type.HOLD_RELEASED, AuditEntry.Type.BOOKING_CONFIRMED, AuditEntry.Type.HOLD_EXPIRED,
+                AuditEntry.Type.BOOKING_CANCELLED), entries.stream().map(AuditEntry::type).toList());
+        assertEquals("customer=Ann seats=ORCH-A-4,ORCH-A-5 expires=2026-10-01T12:10:00Z", entries.get(0).detail());
+        assertEquals("hold=H-000001 customer=Ann seats=ORCH-A-4,ORCH-A-5 total=139.00 promo=FIVER",
+                entries.get(4).detail());
+        assertEquals(lapsed.id(), entries.get(5).subject());
+        assertEquals("customer=Ann seats=ORCH-A-4,ORCH-A-5 refund=139.00", entries.get(6).detail());
+        assertTrue(entries.stream().allMatch(e -> e.eventId().equals("HAMLET")));
+    }
+
+    @Test
+    void failedOperationsLeaveNoAuditEntries() {
+        service.hold("HAMLET", seats("ORCH-A-4"), "Ann");
+        assertThrows(SeatUnavailableException.class, () -> service.hold("HAMLET", seats("ORCH-A-4"), "Bob"));
+        assertThrows(NotFoundException.class, () -> service.release("H-000099"));
+        assertEquals(1, audit.entries().size());
     }
 
     // ---- quotes and availability ----

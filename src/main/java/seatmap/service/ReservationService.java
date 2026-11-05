@@ -8,6 +8,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
@@ -15,6 +16,8 @@ import java.util.function.Supplier;
 
 import seatmap.alloc.BestAvailableAllocator;
 import seatmap.alloc.SeatRequest;
+import seatmap.audit.AuditEntry;
+import seatmap.audit.AuditLog;
 import seatmap.booking.Booking;
 import seatmap.booking.Hold;
 import seatmap.booking.SeatStatus;
@@ -54,14 +57,21 @@ public final class ReservationService {
     private final EventCatalog catalog;
     private final ReservationRepository repository;
     private final Clock clock;
+    private final AuditLog audit;
     private final PricingEngine pricing = new PricingEngine();
     private final BestAvailableAllocator allocator = new BestAvailableAllocator();
     private final Map<String, ReentrantLock> locks = new ConcurrentHashMap<>();
 
+    /** Creates a service that keeps no audit trail. */
     public ReservationService(EventCatalog catalog, ReservationRepository repository, Clock clock) {
-        this.catalog = catalog;
-        this.repository = repository;
-        this.clock = clock;
+        this(catalog, repository, clock, AuditLog.NONE);
+    }
+
+    public ReservationService(EventCatalog catalog, ReservationRepository repository, Clock clock, AuditLog audit) {
+        this.catalog = Objects.requireNonNull(catalog, "catalog");
+        this.repository = Objects.requireNonNull(repository, "repository");
+        this.clock = Objects.requireNonNull(clock, "clock");
+        this.audit = Objects.requireNonNull(audit, "audit");
     }
 
     /** Holds the given seats for the event's default hold time. */
@@ -122,6 +132,8 @@ public final class ReservationService {
             if (!repository.deleteHold(holdId)) {
                 throw new NotFoundException("hold", holdId);
             }
+            audit.record(new AuditEntry(clock.instant(), AuditEntry.Type.HOLD_RELEASED, hold.eventId(), holdId,
+                    "customer=" + hold.customer()));
             return null;
         });
     }
@@ -140,7 +152,7 @@ public final class ReservationService {
             Instant now = clock.instant();
             Hold hold = repository.findHold(holdId).orElseThrow(() -> new NotFoundException("hold", holdId));
             if (hold.isExpired(now)) {
-                repository.deleteHold(holdId);
+                purgeExpired(event.id(), now);
                 throw new HoldExpiredException(holdId, hold.expiresAt());
             }
             requireOnSale(event, now);
@@ -151,6 +163,9 @@ public final class ReservationService {
                     promo == null ? null : promo.code(), now);
             repository.saveBooking(booking);
             repository.deleteHold(holdId);
+            audit.record(new AuditEntry(now, AuditEntry.Type.BOOKING_CONFIRMED, event.id(), id,
+                    "hold=" + holdId + " customer=" + booking.customer() + " seats=" + joinSeats(booking.seats())
+                            + " total=" + booking.total() + (promo == null ? "" : " promo=" + promo.code())));
             return booking;
         });
     }
@@ -174,6 +189,9 @@ public final class ReservationService {
             Money refund = event.refundPolicy().refundFor(booking.total(), now, event.startsAt());
             Booking cancelled = booking.cancelled(now, refund);
             repository.saveBooking(cancelled);
+            audit.record(new AuditEntry(now, AuditEntry.Type.BOOKING_CANCELLED, event.id(), bookingId,
+                    "customer=" + booking.customer() + " seats=" + joinSeats(booking.seats())
+                            + " refund=" + refund));
             return cancelled;
         });
     }
@@ -221,6 +239,8 @@ public final class ReservationService {
         String id = String.format("H-%06d", repository.nextSequence("hold"));
         Hold hold = new Hold(id, event.id(), customer, seats, now, expiresAt);
         repository.saveHold(hold);
+        audit.record(new AuditEntry(now, AuditEntry.Type.HOLD_PLACED, event.id(), id,
+                "customer=" + customer + " seats=" + joinSeats(seats) + " expires=" + expiresAt));
         return hold;
     }
 
@@ -229,6 +249,8 @@ public final class ReservationService {
         for (Hold hold : repository.holdsForEvent(eventId)) {
             if (hold.isExpired(now) && repository.deleteHold(hold.id())) {
                 removed++;
+                audit.record(new AuditEntry(now, AuditEntry.Type.HOLD_EXPIRED, eventId, hold.id(),
+                        "customer=" + hold.customer() + " seats=" + joinSeats(hold.seats())));
             }
         }
         return removed;
@@ -279,6 +301,17 @@ public final class ReservationService {
             seats.add(event.venue().seat(id).orElseThrow(() -> new NotFoundException("seat", id.toString())));
         }
         return seats;
+    }
+
+    private static String joinSeats(List<SeatId> seats) {
+        StringBuilder text = new StringBuilder();
+        for (SeatId seat : seats) {
+            if (text.length() > 0) {
+                text.append(',');
+            }
+            text.append(seat);
+        }
+        return text.toString();
     }
 
     private static void requireOnSale(Event event, Instant now) {
